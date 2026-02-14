@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Upload a handwritten addition and get the calculated sum using AI-powered OCR." />
+  <title>Handwriting Calculator — OCR Addition</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1>✏️ Handwriting Calculator</h1>
+      <p>Write an addition on paper, snap a photo, and let AI compute the sum.</p>
+    </div>
+
+    <!-- Upload Card -->
+    <div class="card">
+      <div class="dropzone" id="dropzone">
+        <span class="dropzone-icon">📷</span>
+        <p class="dropzone-text"><strong>Click or drag</strong> to upload your image</p>
+        <input type="file" class="file-input" id="fileInput" accept="image/*" />
+      </div>
+
+      <!-- Preview -->
+      <div class="preview-wrapper" id="previewWrapper">
+        <img class="preview-img" id="previewImg" alt="Preview" />
+        <p class="file-name" id="fileName"></p>
+      </div>
+
+      <!-- Submit -->
+      <button class="btn" id="calculateBtn" disabled>Calculate Sum</button>
+
+      <!-- Loading -->
+      <div class="spinner" id="spinner">
+        <span class="dot"></span>
+        <span class="dot"></span>
+        <span class="dot"></span>
+      </div>
+
+      <!-- Error -->
+      <div class="error-msg" id="errorMsg"></div>
+
+      <!-- Results -->
+      <div class="results" id="results">
+        <div class="result-section">
+          <div class="result-label">Sum</div>
+          <div class="sum-value" id="sumValue"></div>
+        </div>
+
+        <div class="result-section">
+          <div class="result-label">Extracted Numbers</div>
+          <div class="result-value">
+            <div class="numbers-list" id="numbersList"></div>
+          </div>
+        </div>
+
+        <div class="result-section">
+          <div class="result-label">Raw OCR Text</div>
+          <div class="result-value" id="rawText"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const previewWrapper = document.getElementById('previewWrapper');
+    const previewImg = document.getElementById('previewImg');
+    const fileNameEl = document.getElementById('fileName');
+    const calculateBtn = document.getElementById('calculateBtn');
+    const spinner = document.getElementById('spinner');
+    const errorMsg = document.getElementById('errorMsg');
+    const results = document.getElementById('results');
+    const sumValue = document.getElementById('sumValue');
+    const numbersList = document.getElementById('numbersList');
+    const rawText = document.getElementById('rawText');
+
+    let selectedFile = null;
+
+    // ── Dropzone interactions ──
+    dropzone.addEventListener('click', () => fileInput.click());
+    dropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    });
+    dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length) handleFile(fileInput.files[0]);
+    });
+
+    function handleFile(file) {
+      selectedFile = file;
+      previewImg.src = URL.createObjectURL(file);
+      fileNameEl.textContent = file.name;
+      previewWrapper.classList.add('visible');
+      dropzone.classList.add('has-file');
+      calculateBtn.disabled = false;
+      results.classList.remove('visible');
+      errorMsg.classList.remove('visible');
+    }
+
+    // ── Submit ──
+    calculateBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+
+      calculateBtn.disabled = true;
+      spinner.classList.add('visible');
+      results.classList.remove('visible');
+      errorMsg.classList.remove('visible');
+
+      const formData = new FormData();
+      formData.append('image', selectedFile);
+
+      try {
+        const resp = await fetch('/ocr', { method: 'POST', body: formData });
+        const data = await resp.json();
+
+        if (!resp.ok) throw new Error(data.error || 'OCR failed');
+
+        // Show results
+        sumValue.textContent = data.sum;
+        rawText.textContent = data.raw_text || '(nothing detected)';
+
+        numbersList.innerHTML = '';
+        if (data.numbers && data.numbers.length) {
+          data.numbers.forEach((n, i) => {
+            const chip = document.createElement('span');
+            chip.className = 'num-chip';
+            chip.textContent = n;
+            numbersList.appendChild(chip);
+            if (i < data.numbers.length - 1) {
+              const plus = document.createElement('span');
+              plus.className = 'num-chip';
+              plus.textContent = '+';
+              plus.style.background = 'rgba(0,230,118,0.1)';
+              plus.style.borderColor = 'rgba(0,230,118,0.25)';
+              plus.style.color = '#69f0ae';
+              numbersList.appendChild(plus);
+            }
+          });
+        } else {
+          numbersList.innerHTML = '<span style="color:var(--text-dim)">No numbers found</span>';
+        }
+
+        results.classList.add('visible');
+      } catch (err) {
+        errorMsg.textContent = '⚠️ ' + err.message;
+        errorMsg.classList.add('visible');
+      } finally {
+        spinner.classList.remove('visible');
+        calculateBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
