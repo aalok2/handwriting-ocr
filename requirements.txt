@@ -3,3 +3,5 @@ paddleocr
 flask
 Pillow
 gunicorn
+litellm
+python-dotenv

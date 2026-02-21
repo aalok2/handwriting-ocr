@@ -1,21 +1,35 @@
 import os
 import re
+import json
 import tempfile
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Skip model-source connectivity check for faster startup
 os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 
 from flask import Flask, render_template, request, jsonify
 from paddleocr import PaddleOCR
+from litellm import completion
 
 app = Flask(__name__)
 
 # Initialize PaddleOCR once (downloads models on first run)
 ocr = PaddleOCR(use_textline_orientation=True, lang='en')
 
+# LLM Router Configuration
+# You can switch the model here. Examples:
+# "gpt-4o-mini" (OpenAI)
+# "claude-3-haiku-20240307" (Anthropic)
+# "gemini/gemini-1.5-flash" (Google)
+# "groq/llama3-8b-8192" (Groq/OSS)
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini/gemini-1.5-flash")
+
 
 def extract_numbers_and_sum(image_path: str) -> dict:
-    """Run OCR on the image, extract numbers, and compute their sum."""
+    """Run OCR on the image, then use an LLM agent to extract prices and compute their sum."""
     all_detections = []
 
     for result in ocr.predict(image_path):
@@ -42,33 +56,86 @@ def extract_numbers_and_sum(image_path: str) -> dict:
                 "area": area,
             })
 
-    # ── Filter 1: confidence threshold ──
-    MIN_CONFIDENCE = 0.5
-    filtered = [d for d in all_detections if d["confidence"] >= MIN_CONFIDENCE]
+    # Combine all text fragments for the LLM
+    full_text = " ".join([d["text"] for d in all_detections])
 
-    # ── Filter 2: keep only the larger text regions ──
-    # (discards small, faint background scribbles)
-    if filtered:
-        areas = [d["area"] for d in filtered]
-        median_area = sorted(areas)[len(areas) // 2]
-        # Keep detections whose area is at least 30% of the median
-        filtered = [d for d in filtered if d["area"] >= median_area * 0.3]
-
-    # Combine remaining text fragments
-    full_text = " ".join([d["text"] for d in filtered])
-
-    # Extract whole numbers (skip decimals like 000.02 by consuming them)
-    # First remove decimal numbers so they don't become fragments
-    cleaned = re.sub(r'\d+\.\d+', ' ', full_text)
-    numbers = [int(n) for n in re.findall(r'-?\d+', cleaned)]
+    extracted_numbers, calculated_sum = call_llm_agent(full_text)
 
     return {
-        "raw_text": " ".join([d["text"] for d in all_detections]),
+        "raw_text": full_text,
         "filtered_text": full_text,
         "detections": all_detections,
-        "numbers": numbers,
-        "sum": sum(numbers) if numbers else 0,
+        "numbers": extracted_numbers,
+        "sum": calculated_sum,
     }
+
+def call_llm_agent(full_text: str) -> tuple[list[float], float]:
+    # --- LLM Agent Layer ---
+    system_prompt = """You are an intelligent receipt and handwriting parsing assistant.
+Your task is to extract individual prices from the provided OCR text and calculate their sum.
+CRITICAL RULES:
+1. ONLY extract prices. Ignore quantities (e.g., '3kg', '4 pcs', '2x').
+2. Ignore any pre-calculated total sums (e.g., if the text says 'Total: 150', do NOT include 150 in your list of prices).
+3. You MUST call the `calculate_sum` tool with the list of extracted prices.
+"""
+    
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "calculate_sum",
+                "description": "Calculates the sum of a list of prices extracted from the receipt/image.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prices": {
+                            "type": "array",
+                            "items": {"type": "number"},
+                            "description": "List of individual prices to sum up."
+                        }
+                    },
+                    "required": ["prices"]
+                }
+            }
+        }
+    ]
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Here is the OCR text:\n\n{full_text}"}
+    ]
+
+    max_retries = 2
+    extracted_numbers = []
+    calculated_sum = 0
+    
+    for attempt in range(max_retries + 1):
+        try:
+            response = completion(
+                model=LLM_MODEL,
+                messages=messages,
+                tools=tools,
+                tool_choice={"type": "function", "function": {"name": "calculate_sum"}}
+            )
+            
+            message = response.choices[0].message
+            if message.tool_calls:
+                tool_call = message.tool_calls[0]
+                if tool_call.function.name == "calculate_sum":
+                    args = json.loads(tool_call.function.arguments)
+                    extracted_numbers = args.get("prices", [])
+                    calculated_sum = sum(extracted_numbers)
+                    break
+            
+            # If no tool call or wrong tool call, we can retry
+            messages.append({"role": "assistant", "content": "You must call the `calculate_sum` tool with the extracted prices."})
+        except Exception as e:
+            if attempt == max_retries:
+                print(f"LLM failed after {max_retries} retries: {e}")
+            else:
+                print(f"LLM attempt {attempt + 1} failed: {e}. Retrying...")
+
+    return extracted_numbers, calculated_sum
 
 
 @app.route("/")
