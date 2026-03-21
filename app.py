@@ -12,7 +12,7 @@ os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 
 from flask import Flask, render_template, request, jsonify
 from paddleocr import PaddleOCR
-from litellm import completion
+from litellm import completion, RateLimitError
 
 app = Flask(__name__)
 
@@ -23,9 +23,10 @@ ocr = PaddleOCR(use_textline_orientation=True, lang='en')
 # You can switch the model here. Examples:
 # "gpt-4o-mini" (OpenAI)
 # "claude-3-haiku-20240307" (Anthropic)
-# "gemini/gemini-1.5-flash" (Google)
+# "gemini/gemini-2.0-flash" (Google)
 # "groq/llama3-8b-8192" (Groq/OSS)
-LLM_MODEL = os.getenv("LLM_MODEL", "gemini/gemini-1.5-flash")
+# "huggingface/microsoft/Phi-3-mini-4k-instruct" (HuggingFace)
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash")
 
 
 def extract_numbers_and_sum(image_path: str) -> dict:
@@ -129,6 +130,9 @@ CRITICAL RULES:
             
             # If no tool call or wrong tool call, we can retry
             messages.append({"role": "assistant", "content": "You must call the `calculate_sum` tool with the extracted prices."})
+        except RateLimitError as e:
+            print(f"Rate limit / quota exceeded — not retrying: {e}")
+            break
         except Exception as e:
             if attempt == max_retries:
                 print(f"LLM failed after {max_retries} retries: {e}")
@@ -168,4 +172,4 @@ def ocr_endpoint():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=5001)
